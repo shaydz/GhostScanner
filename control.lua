@@ -53,7 +53,7 @@ script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
   end
   if event.setting == "ghost-scanner-show-hidden" then
     ShowHidden = settings.global["ghost-scanner-show-hidden"].value
-    global.Lookup_items_to_place_this = {}
+    storage.Lookup_items_to_place_this = {}
   end
   if event.setting == "ghost-scanner-negative-output" then
     InvertSign = settings.global["ghost-scanner-negative-output"].value
@@ -77,7 +77,7 @@ function OnEntityCreated(event)
   local entity = event.created_entity or event.entity
   if entity and entity.valid then
     if entity.name == Scanner_Name then
-      global.GhostScanners = global.GhostScanners or {}
+      storage.GhostScanners = storage.GhostScanners or {}
 
       -- entity.operable = false
       -- entity.rotatable = false
@@ -85,7 +85,7 @@ function OnEntityCreated(event)
       local ghostScanner = {}
       ghostScanner.ID = entity.unit_number
       ghostScanner.entity = entity
-      global.GhostScanners[#global.GhostScanners+1] = ghostScanner
+      storage.GhostScanners[#storage.GhostScanners+1] = ghostScanner
 
       UpdateEventHandlers()
     end
@@ -95,9 +95,10 @@ function OnEntityCreated(event)
 end
 
 function RemoveSensor(id)
-  for i=#global.GhostScanners, 1, -1 do
-    if id == global.GhostScanners[i].ID then
-      table.remove(global.GhostScanners,i)
+  if not storage.GhostScanners then return end
+  for i=#storage.GhostScanners, 1, -1 do
+    if id == storage.GhostScanners[i].ID then
+      table.remove(storage.GhostScanners,i)
     end
   end
 
@@ -105,8 +106,7 @@ function RemoveSensor(id)
 end
 
 function OnEntityRemoved(event)
--- script.on_event({defines.events.on_pre_player_mined_item, defines.events.on_robot_pre_mined, defines.events.on_entity_died}, function(event)
-  if event.entity.name == Scanner_Name then
+  if event.entity and event.entity.valid and event.entity.name == Scanner_Name then
     RemoveSensor(event.entity.unit_number)
   end
 end
@@ -119,15 +119,13 @@ function UpdateEventHandlers()
   script.on_event(defines.events.on_tick, nil)
 
   -- subcribe tick or nth_tick depending on number of scanners
-  local entity_count = #global.GhostScanners
+  local entity_count = storage.GhostScanners and #storage.GhostScanners or 0
   if entity_count > 0 then
     local nth_tick = UpdateInterval / entity_count
     if nth_tick >= 2 then
       script.on_nth_tick(math.floor(nth_tick), OnNthTick)
-      -- log("subscribed on_nth_tick = "..math.floor(nth_tick))
     else
       script.on_event(defines.events.on_tick, OnTick)
-      -- log("subscribed on_tick")
     end
 
     script.on_event({defines.events.on_pre_player_mined_item, defines.events.on_robot_pre_mined, defines.events.on_entity_died}, OnEntityRemoved)
@@ -136,25 +134,39 @@ function UpdateEventHandlers()
   end
 end
 
--- runs when #global.GhostScanners > UpdateInterval/2
+-- runs when #storage.GhostScanners > UpdateInterval/2
 function OnTick(event)
+  if not storage.GhostScanners or #storage.GhostScanners == 0 then return end
   local offset = event.tick % UpdateInterval
-  for i=#global.GhostScanners - offset, 1, -1 * UpdateInterval do
-    -- log( event.tick.." updating entity["..i.."]" )
-    UpdateSensor(global.GhostScanners[i])
+  for i=#storage.GhostScanners - offset, 1, -1 * UpdateInterval do
+    local ghostScanner = storage.GhostScanners[i]
+    if ghostScanner then
+      if ghostScanner.entity and ghostScanner.entity.valid then
+        UpdateSensor(ghostScanner)
+      else
+        RemoveSensor(ghostScanner.ID)
+      end
+    end
   end
 end
 
--- runs when #global.GhostScanners <= UpdateInterval/2
+-- runs when #storage.GhostScanners <= UpdateInterval/2
 function OnNthTick(NthTickEvent)
-  if global.UpdateIndex > #global.GhostScanners then
-    global.UpdateIndex = 1
+  if not storage.GhostScanners or #storage.GhostScanners == 0 then return end
+  if storage.UpdateIndex > #storage.GhostScanners then
+    storage.UpdateIndex = 1
   end
 
-  -- log( NthTickEvent.tick.." updating entity["..global.UpdateIndex.."]" )
-  UpdateSensor(global.GhostScanners[global.UpdateIndex])
+  local ghostScanner = storage.GhostScanners[storage.UpdateIndex]
+  if ghostScanner then
+    if ghostScanner.entity and ghostScanner.entity.valid then
+      UpdateSensor(ghostScanner)
+    else
+      RemoveSensor(ghostScanner.ID)
+    end
+  end
 
-  global.UpdateIndex = global.UpdateIndex + 1
+  storage.UpdateIndex = storage.UpdateIndex + 1
 end
 
 end
@@ -168,19 +180,19 @@ local signal_indexes
 
 local function get_items_to_place(prototype)
   if ShowHidden then
-    global.Lookup_items_to_place_this[prototype.name] = prototype.items_to_place_this
+    storage.Lookup_items_to_place_this[prototype.name] = prototype.items_to_place_this
   else
     -- filter items flagged as hidden
     local items_to_place_filtered = {}
     for _, v in pairs (prototype.items_to_place_this) do
-      local item = v.name and game.item_prototypes[v.name]
-      if item and item.has_flag("hidden") == false then
+      local item = v.name and prototypes.item[v.name]
+      if item and not item.hidden then
         items_to_place_filtered[#items_to_place_filtered+1] = v
       end
     end
-    global.Lookup_items_to_place_this[prototype.name] = items_to_place_filtered
+    storage.Lookup_items_to_place_this[prototype.name] = items_to_place_filtered
   end
-  return global.Lookup_items_to_place_this[prototype.name]
+  return storage.Lookup_items_to_place_this[prototype.name]
 end
 
 local function add_signal(name, count)
@@ -274,17 +286,17 @@ local function get_ghosts_as_signals(logsiticNetwork)
       local count_unique_entities = 0
       for _, e in pairs(entities) do
         local uid = e.unit_number
-        local upgrade_prototype = e.get_upgrade_target()
+        local upgrade_target = {e.get_upgrade_target()}
+        local upgrade_prototype = upgrade_target[1]
         if not found_entities[uid] and upgrade_prototype and is_in_bbox(e.position, search_area.bounds) then
           found_entities[uid] = true
-          local items_to_place = global.Lookup_items_to_place_this[upgrade_prototype.name] or get_items_to_place(upgrade_prototype)
+          local items_to_place = storage.Lookup_items_to_place_this[upgrade_prototype.name] or get_items_to_place(upgrade_prototype)
           for _, item_stack in pairs(items_to_place) do
             add_signal(item_stack.name, item_stack.count)
             count_unique_entities = count_unique_entities + item_stack.count
           end
         end
       end
-      -- log("found "..tostring(count_unique_entities).."/"..tostring(result_limit).." upgrade requests." )
       if MaxResults then
         result_limit = result_limit - count_unique_entities
         if result_limit <= 0 then break end
@@ -302,20 +314,19 @@ local function get_ghosts_as_signals(logsiticNetwork)
         if not found_entities[uid] and is_in_bbox(e.position, search_area.bounds) then
           found_entities[uid] = true
           for _, item_stack in pairs(
-            global.Lookup_items_to_place_this[e.ghost_name] or
+            storage.Lookup_items_to_place_this[e.ghost_name] or
             get_items_to_place(e.ghost_prototype)
           ) do
             add_signal(item_stack.name, item_stack.count)
             count_unique_entities = count_unique_entities + item_stack.count
           end
 
-          for request_item, count in pairs(e.item_requests) do
-            add_signal(request_item, count)
-            count_unique_entities = count_unique_entities + count
+          for _, request_item in ipairs(e.item_requests) do
+            add_signal(request_item.name, request_item.count)
+            count_unique_entities = count_unique_entities + request_item.count
           end
         end
       end
-      -- log("found "..tostring(count_unique_entities).."/"..tostring(result_limit).." ghosts." )
       if MaxResults then
         result_limit = result_limit - count_unique_entities
         if result_limit <= 0 then break end
@@ -329,16 +340,15 @@ local function get_ghosts_as_signals(logsiticNetwork)
       local entities = search_area.surface.find_entities_filtered{area=search_area.inner_bounds, limit=result_limit, type="item-request-proxy", force=search_area.force}
       local count_unique_entities = 0
       for _, e in pairs(entities) do
-        local uid = script.register_on_entity_destroyed(e) -- abuse on_entity_destroyed to generate ids directly for proxies
+        local uid = script.register_on_object_destroyed(e)
         if not found_entities[uid] then
           found_entities[uid] = true
-          for request_item, count in pairs(e.item_requests) do
-            add_signal(request_item, count)
-            count_unique_entities = count_unique_entities + count
+          for _, request_item in ipairs(e.item_requests) do
+            add_signal(request_item.name, request_item.count)
+            count_unique_entities = count_unique_entities + request_item.count
           end
         end
       end
-      -- log("found "..tostring(count_unique_entities).."/"..tostring(result_limit).." request proxies." )
       if MaxResults then
         result_limit = result_limit - count_unique_entities
         if result_limit <= 0 then break end
@@ -356,7 +366,7 @@ local function get_ghosts_as_signals(logsiticNetwork)
         if not found_entities[uid] then
           found_entities[uid] = true
           for _, item_stack in pairs(
-            global.Lookup_items_to_place_this[e.ghost_name] or
+            storage.Lookup_items_to_place_this[e.ghost_name] or
             get_items_to_place(e.ghost_prototype)
           ) do
             add_signal(item_stack.name, item_stack.count)
@@ -364,7 +374,6 @@ local function get_ghosts_as_signals(logsiticNetwork)
           end
         end
       end
-      -- log("found "..tostring(count_unique_entities).."/"..tostring(result_limit).." tile-ghosts." )
       if MaxResults then
         result_limit = result_limit - count_unique_entities
         if result_limit <= 0 then break end
@@ -373,13 +382,12 @@ local function get_ghosts_as_signals(logsiticNetwork)
   end
 
   -- round signals to next stack size
-  -- signal = { type = "item", name = name }, count = 0, index = (signal_index)
   if RoundToStack then
     local round = math.ceil
     if InvertSign then round = math.floor end
 
     for _, signal in pairs(signals) do
-      local prototype = game.item_prototypes[signal.signal.name]
+      local prototype = prototypes.item[signal.signal.name]
       if prototype then
         local stack_size = prototype.stack_size
         signal.count = round(signal.count / stack_size) * stack_size
@@ -391,32 +399,31 @@ local function get_ghosts_as_signals(logsiticNetwork)
 end
 
 function UpdateSensor(ghostScanner)
-  -- handle invalidated sensors
-  if not ghostScanner.entity.valid then
-    RemoveSensor(ghostScanner.ID)
+  if not (ghostScanner and ghostScanner.entity and ghostScanner.entity.valid) then
+    if ghostScanner and ghostScanner.ID then RemoveSensor(ghostScanner.ID) end
     return
   end
 
-  -- skip scanner if disabled
-  if not ghostScanner.entity.get_control_behavior().enabled then
-    ghostScanner.entity.get_control_behavior().parameters = nil
+  local cb = ghostScanner.entity.get_control_behavior()
+  if not cb then return end
+
+  if not cb.enabled then
+    cb.parameters = nil
     return
   end
 
-  -- storing logistic network becomes problematic when roboports run out of energy
-  local logisticNetwork = ghostScanner.entity.surface.find_logistic_network_by_position(ghostScanner.entity.position, ghostScanner.entity.force )
+  local logisticNetwork = ghostScanner.entity.surface.find_logistic_network_by_position(ghostScanner.entity.position, ghostScanner.entity.force)
   if not logisticNetwork then
-    ghostScanner.entity.get_control_behavior().parameters = nil
+    cb.parameters = nil
     return
   end
 
-  -- set signals
   local signals = get_ghosts_as_signals(logisticNetwork)
   if not signals then
-    ghostScanner.entity.get_control_behavior().parameters = nil
+    cb.parameters = nil
     return
   end
-  ghostScanner.entity.get_control_behavior().parameters = signals
+  cb.parameters = signals
 end
 
 end
@@ -431,7 +438,7 @@ local function init_events()
     defines.events.script_raised_built,
     defines.events.script_raised_revive,
   }, OnEntityCreated)
-  if global.GhostScanners then
+  if storage.GhostScanners then
     UpdateEventHandlers()
   end
 end
@@ -441,16 +448,16 @@ script.on_load(function()
 end)
 
 script.on_init(function()
-  global.GhostScanners = global.GhostScanners or {}
-  global.UpdateIndex = global.UpdateIndex or 1
-  global.Lookup_items_to_place_this = {}
+  storage.GhostScanners = storage.GhostScanners or {}
+  storage.UpdateIndex = storage.UpdateIndex or 1
+  storage.Lookup_items_to_place_this = {}
   init_events()
 end)
 
 script.on_configuration_changed(function(data)
-  global.GhostScanners = global.GhostScanners or {}
-  global.UpdateIndex = global.UpdateIndex or 1
-  global.Lookup_items_to_place_this = {}
+  storage.GhostScanners = storage.GhostScanners or {}
+  storage.UpdateIndex = storage.UpdateIndex or 1
+  storage.Lookup_items_to_place_this = {}
   init_events()
 end)
 

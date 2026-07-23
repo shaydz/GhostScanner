@@ -195,22 +195,35 @@ local function get_items_to_place(prototype)
   return storage.Lookup_items_to_place_this[prototype.name]
 end
 
-local function add_signal(name, count)
-  local signal_index = signal_indexes[name]
+local function add_signal(signal_type, name, count, quality)
+  local item_uid = name
+  if quality then
+    local prototype_name = type(quality) == "table" and quality.name or quality
+    item_uid = name .. ":" .. prototype_name
+  end
+
+  local signal_index = signal_indexes[item_uid]
   local s
   if signal_index then
     s = signals[signal_index]
   else
-    signal_index = #signals+1
-    signal_indexes[name] = signal_index
-    s = { signal = { type = "item", name = name }, count = 0, index = (signal_index) }
+    signal_index = #signals + 1
+    signal_indexes[item_uid] = signal_index
+    s = {
+      value = {
+        type = signal_type,
+        name = name,
+        quality = type(quality) == "table" and quality.name or quality
+      },
+      min = 0
+    }
     signals[signal_index] = s
   end
 
   if InvertSign then
-    s.count = s.count - count
+    s.min = s.min - count
   else
-    s.count = s.count + count
+    s.min = s.min + count
   end
 end
 
@@ -237,7 +250,7 @@ local function get_ghosts_as_signals(logsiticNetwork)
 
   -- logistic networks don't have an id outside the gui, show the number of cells (roboports) to match the gui
   if ShowCellCount then
-    signals[1] = { signal = { type = "virtual", name = "ghost-scanner-cell-count" }, count = table_size(logsiticNetwork.cells), index = (1) }
+    add_signal("virtual", "ghost-scanner-cell-count", table_size(logsiticNetwork.cells))
   end
 
   for _,cell in pairs(logsiticNetwork.cells) do
@@ -269,7 +282,7 @@ local function get_ghosts_as_signals(logsiticNetwork)
       local uid = e.unit_number or e.position
       if not found_entities[uid] and e.to_be_deconstructed() and e.prototype.cliff_explosive_prototype then
         found_entities[uid] = true
-        add_signal(e.prototype.cliff_explosive_prototype, 1)
+        add_signal("item", e.prototype.cliff_explosive_prototype, 1)
         count_unique_entities = count_unique_entities + 1
       end
     end
@@ -288,11 +301,12 @@ local function get_ghosts_as_signals(logsiticNetwork)
         local uid = e.unit_number
         local upgrade_target = {e.get_upgrade_target()}
         local upgrade_prototype = upgrade_target[1]
+        local quality = upgrade_target[2]
         if not found_entities[uid] and upgrade_prototype and is_in_bbox(e.position, search_area.bounds) then
           found_entities[uid] = true
           local items_to_place = storage.Lookup_items_to_place_this[upgrade_prototype.name] or get_items_to_place(upgrade_prototype)
           for _, item_stack in pairs(items_to_place) do
-            add_signal(item_stack.name, item_stack.count)
+            add_signal("item", item_stack.name, item_stack.count, quality)
             count_unique_entities = count_unique_entities + item_stack.count
           end
         end
@@ -317,12 +331,12 @@ local function get_ghosts_as_signals(logsiticNetwork)
             storage.Lookup_items_to_place_this[e.ghost_name] or
             get_items_to_place(e.ghost_prototype)
           ) do
-            add_signal(item_stack.name, item_stack.count)
+            add_signal("item", item_stack.name, item_stack.count, e.quality)
             count_unique_entities = count_unique_entities + item_stack.count
           end
 
           for _, request_item in ipairs(e.item_requests) do
-            add_signal(request_item.name, request_item.count)
+            add_signal("item", request_item.name, request_item.count, request_item.quality)
             count_unique_entities = count_unique_entities + request_item.count
           end
         end
@@ -344,7 +358,7 @@ local function get_ghosts_as_signals(logsiticNetwork)
         if not found_entities[uid] then
           found_entities[uid] = true
           for _, request_item in ipairs(e.item_requests) do
-            add_signal(request_item.name, request_item.count)
+            add_signal("item", request_item.name, request_item.count, request_item.quality)
             count_unique_entities = count_unique_entities + request_item.count
           end
         end
@@ -369,7 +383,7 @@ local function get_ghosts_as_signals(logsiticNetwork)
             storage.Lookup_items_to_place_this[e.ghost_name] or
             get_items_to_place(e.ghost_prototype)
           ) do
-            add_signal(item_stack.name, item_stack.count)
+            add_signal("item", item_stack.name, item_stack.count, item_stack.quality)
             count_unique_entities = count_unique_entities + item_stack.count
           end
         end
@@ -387,15 +401,30 @@ local function get_ghosts_as_signals(logsiticNetwork)
     if InvertSign then round = math.floor end
 
     for _, signal in pairs(signals) do
-      local prototype = prototypes.item[signal.signal.name]
+      local prototype = prototypes.item[signal.value.name]
       if prototype then
         local stack_size = prototype.stack_size
-        signal.count = round(signal.count / stack_size) * stack_size
+        signal.min = round(signal.min / stack_size) * stack_size
       end
     end
   end
 
   return signals
+end
+
+local function set_combinator_signals(cb, signals)
+  if not cb or not cb.valid then return end
+  
+  local section
+  if cb.sections_count == 0 then
+    section = cb.add_section()
+  else
+    section = cb.get_section(1)
+  end
+
+  if section then
+    section.filters = signals or {}
+  end
 end
 
 function UpdateSensor(ghostScanner)
@@ -408,22 +437,18 @@ function UpdateSensor(ghostScanner)
   if not cb then return end
 
   if not cb.enabled then
-    cb.parameters = nil
+    set_combinator_signals(cb, nil)
     return
   end
 
   local logisticNetwork = ghostScanner.entity.surface.find_logistic_network_by_position(ghostScanner.entity.position, ghostScanner.entity.force)
   if not logisticNetwork then
-    cb.parameters = nil
+    set_combinator_signals(cb, nil)
     return
   end
 
   local signals = get_ghosts_as_signals(logisticNetwork)
-  if not signals then
-    cb.parameters = nil
-    return
-  end
-  cb.parameters = signals
+  set_combinator_signals(cb, signals)
 end
 
 end
